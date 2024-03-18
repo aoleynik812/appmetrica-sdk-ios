@@ -82,7 +82,7 @@ let package = Package(
                 .network, .log, .coreUtils, .hostState, .protobufUtils, .platform, .storageUtils, .encodingUtils, .protobuf, .fmdb
             ],
             searchPaths: [
-                "../../AppMetricaCoreExtension/Sources/include/AppMetricaCoreExtension", "./**"
+                "../../AppMetricaCoreExtension/Sources/include/AppMetricaCoreExtension"
             ]
         ),
         .testTarget(
@@ -92,7 +92,7 @@ let package = Package(
             ],
             externalDependencies: [.kiwi],
             searchPaths: [
-                "../../AppMetricaCoreExtension/Sources/include/AppMetricaCoreExtension", "./**", "../Sources/**"
+                "../../AppMetricaCoreExtension/Sources/include/AppMetricaCoreExtension"
             ],
             resources: [.process("Resources")]
         ),
@@ -104,13 +104,13 @@ let package = Package(
                 .core, .log, .coreExtension, .hostState, .protobufUtils, .platform, .storageUtils, .encodingUtils, .protobuf
             ],
             externalDependencies: [.ksCrash],
-            searchPaths: ["./**"]
+            searchPaths: []
         ),
         .testTarget(
             target: .crashes,
             dependencies: [.crashes, .testUtils],
             externalDependencies: [.kiwi],
-            searchPaths: ["../Sources/**", "./Helpers"],
+            searchPaths: ["./Helpers"],
             resources: [.process("Resources")]
         ),
         
@@ -118,7 +118,7 @@ let package = Package(
         .target(
             target: .coreExtension,
             dependencies: [.core, .storageUtils],
-            searchPaths: ["./**"]
+            searchPaths: []
         ),
         
         //MARK: - AppMetrica Log
@@ -126,7 +126,7 @@ let package = Package(
         .testTarget(
             target: .log,
             dependencies: [.log],
-            searchPaths: ["../Sources"]
+            searchPaths: [""]
         ),
         
         //MARK: - AppMetrica Protobuf
@@ -241,13 +241,17 @@ extension Target {
         if includePrivacyManifest {
             resources.append(.copy("Resources/PrivacyInfo.xcprivacy"))
         }
+        
+        var resultSearchPath: Set<String> = .init()
+        resultSearchPath.formUnion(target.headerPaths)
+        resultSearchPath.formUnion(searchPaths)
 
         return .target(
             name: target.name,
             dependencies: dependencies.map { $0.dependency } + externalDependencies.map { $0.dependency },
             path: target.path,
             resources: resources,
-            cSettings: combinedSettings(from: searchPaths, path: target.path)
+            cSettings: resultSearchPath.sorted().map { .headerSearchPath($0) }
         )
     }
     
@@ -258,64 +262,205 @@ extension Target {
                            searchPaths: [String] = [],
                            resources: [Resource]? = nil) -> Target {
         
+        var resultSearchPath: Set<String> = .init()
+        resultSearchPath.formUnion(target.testsHeaderPaths)
+        resultSearchPath.formUnion(target.headerPaths.map { "../Sources/\($0)" })
+        resultSearchPath.formUnion(searchPaths)
+        
         return .testTarget(
             name: target.testsName,
             dependencies: dependencies.map { $0.dependency } + externalDependencies.map { $0.dependency },
             path: target.testsPath,
             resources: resources,
-            cSettings: combinedSettings(from: searchPaths, path: target.testsPath)
+            cSettings: resultSearchPath.sorted().map { .headerSearchPath($0) }
         )
     }
     
-    private static func combinedSettings(from searchPaths: [String], path: String) -> [CSetting] {
-        return searchPaths.flatMap { searchPath -> [CSetting] in
-            if searchPath.hasSuffix("**") {
-                return headerSearchPaths(path, relativeSearchPath: String(searchPath.dropLast(2)))
-            } else {
-                return [.headerSearchPath(searchPath)]
-            }
-        }
-    }
+}
 
-    private static func headerSearchPaths(_ targetPath: String, relativeSearchPath: String = ".") -> [CSetting] {
-        let fullPathURL = buildFullPathURL(targetPath: targetPath, relativeSearchPath: relativeSearchPath)
-        return [.headerSearchPath(relativeSearchPath)] + buildSettings(from: fullPathURL, using: relativeSearchPath)
-    }
+extension AppMetricaTarget {
     
-    private static func buildFullPathURL(targetPath: String, relativeSearchPath: String) -> URL {
-        let packageDirectoryURL = URL(fileURLWithPath: #file).deletingLastPathComponent()
-        return packageDirectoryURL
-            .appendingPathComponent(targetPath)
-            .appendingPathComponent(relativeSearchPath)
-            .resolvingSymlinksInPath()
-    }
-
-    private static func buildSettings(from fullPathURL: URL, using relativeSearchPath: String) -> [CSetting] {
-        let fileManager = FileManager.default
-        guard let enumerator = fileManager.enumerator(at: fullPathURL, includingPropertiesForKeys: nil) else {
-            return [.headerSearchPath(relativeSearchPath)]
+    var headerPaths: Set<String> {
+        var customPaths: Set<String> = .init()
+        
+        switch self {
+        case .core:
+            customPaths = Set(HeaderPaths.core)
+        case .coreUtils:
+            customPaths = Set(HeaderPaths.coreUtils)
+        case .crashes:
+            customPaths = Set(HeaderPaths.crashes)
+        default:
+            break
         }
         
-        return enumerator
-            .compactMap { $0 as? URL }
-            .reduce([.headerSearchPath(relativeSearchPath)]) { (settings, fileOrDirURL) in
-                var isDir: ObjCBool = false
-                if fileManager.fileExists(atPath: fileOrDirURL.path, isDirectory: &isDir), isDir.boolValue,
-                   let relativePath = relativePath(from: fullPathURL, toDestination: fileOrDirURL) {
-                    let combinedPath = [relativeSearchPath, relativePath]
-                        .joined(separator: "/")
-                        .replacingOccurrences(of: "//", with: "/")
-                    return settings + [.headerSearchPath(combinedPath)]
-                }
-                return settings
-            }
+        customPaths.insert(".")
+        customPaths.insert("include")
+        customPaths.insert("include/\(name)")
+        
+        return customPaths
     }
+    
+    var testsHeaderPaths: Set<String> {
+        var customPaths: Set<String> = .init()
+        
+        switch self {
+        case .core:
+            customPaths = Set(TestHeaderPaths.core)
+        case .coreUtils:
+            customPaths = Set(TestHeaderPaths.coreUtils)
+        case .crashes:
+            customPaths = Set(TestHeaderPaths.crashes)
+        case .encodingUtils:
+            customPaths = Set(TestHeaderPaths.encodingUtils)
+        case .log:
+            customPaths = Set(TestHeaderPaths.log)
+        case .network:
+            customPaths = Set(TestHeaderPaths.network)
+        case .platform:
+            customPaths = Set(TestHeaderPaths.platform)
+        case .protobufUtils:
+            customPaths = Set(TestHeaderPaths.protobufUtils)
+        default:
+            break
+        }
+        
+        customPaths.insert(".")
+        
+        return customPaths
+    }
+    
+}
 
-    private static func relativePath(from base: URL, toDestination dest: URL) -> String? {
-        let destComponents = dest.pathComponents
-        let baseComponents = base.pathComponents
-        let commonCount = zip(destComponents, baseComponents).prefix(while: { $0.0 == $0.1 }).count
-        let downwardPaths = destComponents[commonCount...]
-        return downwardPaths.isEmpty ? nil : downwardPaths.joined(separator: "/")
-    }
+enum HeaderPaths {
+    
+    static let core = [
+        ".",
+        "./Generated",
+        "./AdRevenue",
+        "./AdRevenue/Serialization",
+        "./AdRevenue/Formatting",
+        "./AdRevenue/Model",
+        "./AdRevenue/Validation",
+        "./Database",
+        "./Database/Scheme",
+        "./Database/Trimming",
+        "./Database/IntegrityManager",
+        "./Database/KeyValueStorage",
+        "./Database/KeyValueStorage/DataProviders",
+        "./Database/KeyValueStorage/Converters",
+        "./Database/Migration",
+        "./Database/Migration/Scheme",
+        "./Database/Migration/Library",
+        "./Database/Migration/Utilities",
+        "./Database/Migration/ApiKey",
+        "./Configuration",
+        "./Core",
+        "./ECommerce",
+        "./Privacy",
+        "./Reporter",
+        "./Reporter/FirstOccurrence",
+        "./Limiters",
+        "./Strategies",
+        "./Location",
+        "./include",
+        "./include/AppMetricaCore",
+        "./Resources",
+        "./Network",
+        "./Network/File",
+        "./Network/Report",
+        "./Network/Startup",
+        "./Dispatcher",
+        "./Permissions",
+        "./StartupPermissions",
+        "./Attribution",
+        "./Model",
+        "./Model/Reporter",
+        "./Model/Reporter/Serialization",
+        "./Model/Truncation",
+        "./Model/Event",
+        "./Model/Event/Value",
+        "./Model/Session",
+        "./Profiles",
+        "./Profiles/Truncation",
+        "./Profiles/Models",
+        "./Profiles/Updates",
+        "./Profiles/Updates/Factory",
+        "./Profiles/Attributes",
+        "./Profiles/Attributes/Complex",
+        "./Profiles/Validation",
+        "./ExtensionsReport",
+        "./Revenue",
+        "./Revenue/AutoIAP",
+        "./Revenue/AutoIAP/Models",
+        "./SearchAds",
+        "./SearchAds/AdServices",
+        "./Logging",
+        "./DeepLink",
+    ]
+
+    static let coreUtils = [
+        ".",
+        "./include",
+        "./include/AppMetricaCoreUtils",
+        "./Truncation",
+        "./Utilities",
+        "./Execution",
+    ]
+
+    
+    static let crashes = [
+        ".",
+        "./Generated",
+        "./Plugins",
+        "./include",
+        "./include/AppMetricaCrashes",
+        "./Resources",
+        "./LibraryCrashes",
+        "./CrashModels",
+        "./CrashModels/Crash",
+        "./CrashModels/Crash/Thread",
+        "./CrashModels/Crash/Error",
+        "./CrashModels/System",
+        "./Error",
+    ]
+
+}
+
+enum TestHeaderPaths {
+    
+    static let core = [
+        "Resources",
+        "Utilities",
+    ]
+    
+    
+    static let coreUtils = [
+        "Utilities",
+    ]
+    
+    static let crashes = [
+        "Helpers",
+    ]
+    
+    static let encodingUtils = [
+        "Utilities",
+    ]
+    
+    static let log = [
+        "Mocks",
+    ]
+    
+    static let network = [
+        "Utilities",
+    ]
+    
+    static let platform = [
+        "Mocks",
+    ]
+    
+    static let protobufUtils = [
+        "Mocks",
+    ]
+    
 }
